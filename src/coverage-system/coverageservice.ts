@@ -1,4 +1,4 @@
-import {Section} from "lcov-parse";
+import { Section } from "lcov-parse";
 import {
     Disposable,
     FileSystemWatcher,
@@ -6,13 +6,14 @@ import {
     TextEditor,
     window,
     workspace,
+    WorkspaceFolder
 } from "vscode";
 
-import {Config} from "../extension/config";
-import {CoverageParser} from "../files/coverageparser";
-import {FilesLoader} from "../files/filesloader";
-import {Renderer} from "./renderer";
-import {SectionFinder} from "./sectionfinder";
+import { Config } from "../extension/config";
+import { CoverageParser } from "../files/coverageparser";
+import { FilesLoader } from "../files/filesloader";
+import { Renderer } from "./renderer";
+import { SectionFinder } from "./sectionfinder";
 
 enum Status {
     ready = "READY",
@@ -28,7 +29,7 @@ export class CoverageService {
     private filesLoader: FilesLoader;
     private renderer: Renderer;
     private coverageParser: CoverageParser;
-    private coverageWatcher: FileSystemWatcher;
+    private coverageWatchers: FileSystemWatcher[];
     private editorWatcher: Disposable;
     private sectionFinder: SectionFinder;
 
@@ -55,7 +56,7 @@ export class CoverageService {
     }
 
     public dispose() {
-        if (this.coverageWatcher) { this.coverageWatcher.dispose(); }
+        if (this.coverageWatchers) { this.coverageWatchers.map(cw => cw.dispose()) }
         if (this.editorWatcher) { this.editorWatcher.dispose(); }
         this.cache = new Map(); // reset cache to empty
         const visibleEditors = window.visibleTextEditors;
@@ -128,18 +129,30 @@ export class CoverageService {
     }
 
     private listenToFileSystem() {
-        // If the user has defined manual coverage files to do continue, as the files
-        // defined could be outside the workspace folders and not "watchable".
-        if (this.configStore.manualCoverageFilePaths.length) { return; }
-
-        const fileNames = this.configStore.coverageFileNames.toString();
-        // Creates a BlobPattern for all coverage files.
-        // EX: `**/{cov.xml, lcov.info}`
-        const blobPattern = `**/{${fileNames}}`;
-        this.coverageWatcher = workspace.createFileSystemWatcher(blobPattern);
-        this.coverageWatcher.onDidChange(this.loadCacheAndRender.bind(this));
-        this.coverageWatcher.onDidCreate(this.loadCacheAndRender.bind(this));
-        this.coverageWatcher.onDidDelete(this.loadCacheAndRender.bind(this));
+        let blobPattern;
+        if (this.configStore.manualCoverageFilePaths.length) {
+            blobPattern = `${this.configStore.manualCoverageFilePaths}`
+            const coverageWatcher = workspace.createFileSystemWatcher(blobPattern);
+            coverageWatcher.onDidChange(this.loadCacheAndRender.bind(this));
+            coverageWatcher.onDidCreate(this.loadCacheAndRender.bind(this));
+            coverageWatcher.onDidDelete(this.loadCacheAndRender.bind(this));
+            this.coverageWatchers = [coverageWatcher];
+        } else {
+            const fileNames = this.configStore.coverageFileNames.toString();
+            // Creates a BlobPattern for all coverage files.
+            // EX: `**/{cov.xml, lcov.info}`
+            blobPattern = `{${fileNames}}`;
+            if (workspace.workspaceFolders) {
+                this.coverageWatchers = workspace.workspaceFolders.map((workspaceFolder) => {
+                    const fullPattern = `${workspaceFolder.uri.fsPath}/${blobPattern}`
+                    const coverageWatcher = workspace.createFileSystemWatcher(fullPattern);
+                    coverageWatcher.onDidChange(this.loadCacheAndRender.bind(this));
+                    coverageWatcher.onDidCreate(this.loadCacheAndRender.bind(this));
+                    coverageWatcher.onDidDelete(this.loadCacheAndRender.bind(this));
+                    return coverageWatcher;
+                });
+            }
+        }
     }
 
     private async handleEditorEvents(textEditors: TextEditor[]) {
